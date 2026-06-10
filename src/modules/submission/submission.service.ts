@@ -110,30 +110,85 @@ export class SubmissionService {
     };
   }
 
-  private async checkAccess(submission: Submission, user: CurrentUserPayload) {
-    const sample = await this.sampleRepo.findOne({
-      where: { id: submission.sampleId },
-      relations: ['project'],
-    });
+  private async validateProjectConsistency(
+    formId: string,
+    sampleId: string,
+  ): Promise<{ form: Form; sample: Sample; projectId: string; clientId: string }> {
+    const form = await this.formRepo.findOne({ where: { id: formId }, relations: ['project'] });
+    if (!form) throw new NotFoundException('表单不存在');
+
+    const sample = await this.sampleRepo.findOne({ where: { id: sampleId }, relations: ['project'] });
     if (!sample) throw new NotFoundException('样本不存在');
-    if (user.role !== UserRole.ADMIN && sample.project.clientId !== user.clientId) {
-      throw new ForbiddenException('无权访问');
+
+    if (form.projectId !== sample.projectId) {
+      throw new BadRequestException(
+        `跨项目提交被禁止：表单(projectId=${form.projectId})与样本(projectId=${sample.projectId})不属于同一项目`,
+      );
     }
-    return sample;
+
+    const sampleWithProject = sample as any;
+    return {
+      form,
+      sample,
+      projectId: form.projectId,
+      clientId: sampleWithProject.project ? sampleWithProject.project.clientId : form.project.clientId,
+    };
+  }
+
+  private async checkAccess(submission: Submission, user: CurrentUserPayload) {
+    const result = await this.validateProjectConsistency(submission.formId, submission.sampleId);
+    const { sample, clientId, projectId } = result;
+
+    if (user.role !== UserRole.ADMIN && clientId !== user.clientId) {
+      throw new ForbiddenException('无权访问：该资源属于其他调用方(clientId)');
+    }
+
+    if (user.role === UserRole.COLLECTOR) {
+      if (sample.assignedTo && sample.assignedTo !== user.id) {
+        throw new ForbiddenException('无权操作：该样本未分配给您');
+      }
+      if (submission.submittedBy && submission.submittedBy !== user.id) {
+        throw new ForbiddenException('无权操作：该提交记录不是由您创建的');
+      }
+    }
+
+    if (user.role === UserRole.REVIEWER) {
+      if (submission.assignedReviewer && submission.assignedReviewer !== user.id) {
+        throw new ForbiddenException('无权操作：该提交记录未分配给您复核');
+      }
+    }
+
+    return { sample, projectId, clientId };
   }
 
   async create(dto: CreateSubmissionDto, user: CurrentUserPayload) {
-    const form = await this.formRepo.findOne({
-      where: { id: dto.formId },
-      relations: ['project'],
+    const { form, sample, clientId, projectId } = await this.validateProjectConsistency(
+      dto.formId,
+      dto.sampleId,
+    );
+
+    if (user.role !== UserRole.ADMIN && clientId !== user.clientId) {
+      throw new ForbiddenException('无权访问：该资源属于其他调用方(clientId)');
+    }
+
+    if (user.role === UserRole.COLLECTOR) {
+      if (sample.assignedTo && sample.assignedTo !== user.id) {
+        throw new ForbiddenException('无权创建：该样本未分配给您');
+      }
+      if (!sample.assignedTo) {
+        sample.assignedTo = user.id;
+        if (sample.status === SampleStatus.PENDING) {
+          sample.status = SampleStatus.IN_PROGRESS;
+          await this.sampleRepo.save(sample);
+        }
+      }
+    }
+
+    const existing = await this.submissionRepo.findOne({
+      where: { sampleId: dto.sampleId, formId: dto.formId },
     });
-    if (!form) throw new NotFoundException('表单不存在');
-
-    const sample = await this.sampleRepo.findOne({ where: { id: dto.sampleId } });
-    if (!sample) throw new NotFoundException('样本不存在');
-
-    if (sample.assignedTo && sample.assignedTo !== user.id && user.role === UserRole.COLLECTOR) {
-      throw new ForbiddenException('该样本未分配给您');
+    if (existing) {
+      throw new BadRequestException('该样本已存在对应提交记录，请使用 PATCH 更新或 POST /submit 提交');
     }
 
     const validation = await this.validateSubmission(dto.formId, dto.answers, dto.sampleId);
@@ -164,7 +219,7 @@ export class SubmissionService {
       await this.attachmentRepo
         .createQueryBuilder()
         .update()
-        .set({ submissionId: saved.id })
+        .set({ submissionId: saved.id, projectId })
         .whereInIds(dto.attachmentIds)
         .execute();
     }
@@ -179,7 +234,8 @@ export class SubmissionService {
       relations: ['answers'],
     });
     if (!submission) throw new NotFoundException('提交不存在');
-    await this.checkAccess(submission, user);
+
+    const { sample } = await this.checkAccess(submission, user);
 
     if (submission.isLocked) {
       throw new BadRequestException('该记录已锁定，无法提交');
@@ -198,7 +254,6 @@ export class SubmissionService {
     submission.hasDuplicate = validation.hasDuplicate;
     submission.hasMissing = validation.hasMissing;
 
-    const sample = await this.sampleRepo.findOne({ where: { id: submission.sampleId } });
     if (sample) {
       sample.status = SampleStatus.SUBMITTED;
       await this.sampleRepo.save(sample);
@@ -212,16 +267,18 @@ export class SubmissionService {
   async recall(id: string, user: CurrentUserPayload) {
     const submission = await this.submissionRepo.findOne({ where: { id } });
     if (!submission) throw new NotFoundException('提交不存在');
+
     await this.checkAccess(submission, user);
 
     if (submission.isLocked) {
       throw new BadRequestException('该记录已锁定，无法撤回');
     }
-    if (![SubmissionStatus.SUBMITTED, SubmissionStatus.REJECTED].includes(submission.status)) {
+    if (![SubmissionStatus.SUBMITTED, SubmissionStatus.REJECTED, SubmissionStatus.REVIEWING].includes(submission.status)) {
       throw new BadRequestException('当前状态不可撤回');
     }
 
     submission.status = SubmissionStatus.DRAFT;
+    submission.assignedReviewer = null;
     const saved = await this.submissionRepo.save(submission);
     await this.addHistory(saved.id, user.id, HistoryAction.RECALLED);
     return saved;
@@ -237,6 +294,12 @@ export class SubmissionService {
 
     if (user.role !== UserRole.ADMIN) {
       qb.andWhere('project.clientId = :cid', { cid: user.clientId });
+    }
+    if (user.role === UserRole.COLLECTOR) {
+      qb.andWhere('(sample.assignedTo = :uid OR s.submittedBy = :uid)', { uid: user.id });
+    }
+    if (user.role === UserRole.REVIEWER) {
+      qb.andWhere('s.assignedReviewer = :uid', { uid: user.id });
     }
     if (query.formId) qb.andWhere('s.formId = :fid', { fid: query.formId });
     if (query.status) qb.andWhere('s.status = :st', { st: query.status });
@@ -263,6 +326,7 @@ export class SubmissionService {
       relations: ['answers'],
     });
     if (!submission) throw new NotFoundException('提交不存在');
+
     await this.checkAccess(submission, user);
 
     if (submission.isLocked) {

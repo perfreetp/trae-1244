@@ -1,6 +1,7 @@
 import { IsString, IsEnum, IsOptional, IsArray, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ReviewResult } from '../../../entities/review-record.entity';
+import { SubmissionStatus } from '../../../entities/submission.entity';
 
 export class IssueDto {
   @IsString()
@@ -34,4 +35,14 @@ export class AssignReviewerDto {
 
   @IsString()
   reviewerId: string;
+}
+
+export class QueryReviewTodoDto {
+  @IsString()
+  @IsOptional()
+  projectId?: string;
+
+  @IsEnum(SubmissionStatus)
+  @IsOptional()
+  status?: SubmissionStatus;
 }

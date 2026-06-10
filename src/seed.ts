@@ -1,15 +1,23 @@
 import 'reflect-metadata';
 import { DataSource } from 'typeorm';
+import initSqlJs from 'sql.js';
 import * as bcrypt from 'bcryptjs';
+import * as fs from 'fs';
+import * as path from 'path';
 import { User, UserRole } from './entities/user.entity';
 import { Project, ProjectStatus } from './entities/project.entity';
 import { Form, FormStatus, QuestionType } from './entities/form.entity';
 import { FormQuestion } from './entities/form-question.entity';
 import { Sample, SampleStatus } from './entities/sample.entity';
 
+const dataDir = path.resolve('./data');
+if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+
 const dataSource = new DataSource({
-  type: 'better-sqlite3',
-  database: './data/collection.db',
+  type: 'sqljs',
+  autoSave: true,
+  location: './data/collection.db',
+  driver: initSqlJs,
   entities: [__dirname + '/**/*.entity{.ts,.js}'],
   synchronize: true,
 });

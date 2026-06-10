@@ -28,6 +28,9 @@ export class Attachment {
   submission: Submission;
 
   @Column({ nullable: true })
+  projectId: string;
+
+  @Column({ nullable: true })
   questionKey: string;
 
   @Column({

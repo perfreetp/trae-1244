@@ -78,6 +78,9 @@ export class Submission {
   @Column({ default: false })
   isLocked: boolean;
 
+  @Column({ nullable: true })
+  assignedReviewer: string;
+
   @CreateDateColumn()
   createdAt: Date;
 
