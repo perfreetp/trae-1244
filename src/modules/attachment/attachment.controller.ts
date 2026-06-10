@@ -17,6 +17,7 @@ import { ApiTags, ApiBearerAuth, ApiConsumes, ApiBody, ApiOperation } from '@nes
 import { Response } from 'express';
 import { AttachmentService } from './attachment.service';
 import { AttachmentType } from '../../entities/attachment.entity';
+import { CurrentUser, CurrentUserPayload } from '../auth/current-user.decorator';
 
 class UploadAttachmentBodyDto {
   type?: AttachmentType;
@@ -36,7 +37,7 @@ export class AttachmentController {
   @Post('upload')
   @ApiOperation({
     summary:
-      '上传附件（multipart/form-data），type/questionKey/metadata/submissionId/projectId 均作为表单字段传入；type 可选，不传时根据 mimetype 自动识别',
+      '上传附件（multipart/form-data），自动校验绑定的 submissionId/projectId 归属，跨客户上传将被拒绝',
   })
   @ApiConsumes('multipart/form-data')
   @ApiBody({
@@ -56,11 +57,11 @@ export class AttachmentController {
         },
         submissionId: {
           type: 'string',
-          description: '可选：已有提交记录 ID（也可在创建/更新 submission 时通过 attachmentIds 关联）',
+          description: '可选：已有提交记录 ID（会校验归属，跨客户绑定将被拒绝）',
         },
         projectId: {
           type: 'string',
-          description: '可选：项目 ID，用于提前绑定权限范围',
+          description: '可选：项目 ID（会校验归属）',
         },
         metadata: {
           type: 'object',
@@ -73,6 +74,7 @@ export class AttachmentController {
   async upload(
     @UploadedFile() file: Express.Multer.File,
     @Body() body: UploadAttachmentBodyDto,
+    @CurrentUser() user: CurrentUserPayload,
   ) {
     if (!file) {
       throw new BadRequestException('未接收到文件，请确认 multipart 字段名为 file');
@@ -93,17 +95,27 @@ export class AttachmentController {
       metadataParsed,
       body.submissionId,
       body.projectId,
+      user,
     );
   }
 
   @Get(':id')
-  async findOne(@Param('id') id: string) {
-    return this.attachmentService.findOne(id);
+  @ApiOperation({ summary: '查看附件信息（自动校验归属，跨客户访问被拒绝）' })
+  async findOne(
+    @Param('id') id: string,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    return this.attachmentService.findOne(id, user);
   }
 
   @Get(':id/download')
-  async download(@Param('id') id: string, @Res() res: Response) {
-    const attachment = await this.attachmentService.findOne(id);
+  @ApiOperation({ summary: '下载附件（自动校验归属，跨客户无法下载他人附件）' })
+  async download(
+    @Param('id') id: string,
+    @CurrentUser() user: CurrentUserPayload,
+    @Res() res: Response,
+  ) {
+    const attachment = await this.attachmentService.findOne(id, user);
     const stream = this.attachmentService.getStream(attachment);
     res.set({
       'Content-Type': attachment.mimeType,
@@ -113,7 +125,11 @@ export class AttachmentController {
   }
 
   @Delete(':id')
-  async remove(@Param('id') id: string) {
-    return this.attachmentService.remove(id);
+  @ApiOperation({ summary: '删除附件（自动校验归属）' })
+  async remove(
+    @Param('id') id: string,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    return this.attachmentService.remove(id, user);
   }
 }

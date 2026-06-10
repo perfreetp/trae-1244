@@ -167,8 +167,8 @@ npm run start:prod
 
 ```
 PORT=3000
-DB_TYPE=better-sqlite3
-DB_DATABASE=./data/data-collection.db
+DB_TYPE=sqljs
+DB_DATABASE=./data/collection.db
 JWT_SECRET=please-change-this-secret-to-strong-random-value
 JWT_EXPIRES_IN=7d
 UPLOAD_DIR=./uploads

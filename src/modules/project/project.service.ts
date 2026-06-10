@@ -22,7 +22,17 @@ export class ProjectService {
   ) {}
 
   async create(dto: CreateProjectDto, user: CurrentUserPayload) {
-    const clientId = dto.clientId || user.clientId || `client_${user.id}`;
+    let clientId: string;
+    if (user.role === UserRole.ADMIN) {
+      clientId = dto.clientId || user.clientId || `client_${user.id}`;
+    } else {
+      if (dto.clientId && dto.clientId !== user.clientId) {
+        throw new ForbiddenException(
+          `无权创建项目：普通客户只能在自己的 clientId(${user.clientId}) 下创建项目，禁止传入其他 clientId`,
+        );
+      }
+      clientId = user.clientId;
+    }
     const project = this.projectRepo.create({
       ...dto,
       ownerId: user.id,

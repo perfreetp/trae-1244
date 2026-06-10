@@ -144,7 +144,10 @@ export class SubmissionService {
     }
 
     if (user.role === UserRole.COLLECTOR) {
-      if (sample.assignedTo && sample.assignedTo !== user.id) {
+      if (!sample.assignedTo) {
+        throw new ForbiddenException('无权操作：该样本尚未分配采集人员，需先由管理员/客户分配后才能操作');
+      }
+      if (sample.assignedTo !== user.id) {
         throw new ForbiddenException('无权操作：该样本未分配给您');
       }
       if (submission.submittedBy && submission.submittedBy !== user.id) {
@@ -153,8 +156,11 @@ export class SubmissionService {
     }
 
     if (user.role === UserRole.REVIEWER) {
-      if (submission.assignedReviewer && submission.assignedReviewer !== user.id) {
-        throw new ForbiddenException('无权操作：该提交记录未分配给您复核');
+      if (!submission.assignedReviewer) {
+        throw new ForbiddenException('无权访问：该提交记录尚未分配复核人员，请等待客户/管理员派单后在"我的复核待办"中处理');
+      }
+      if (submission.assignedReviewer !== user.id) {
+        throw new ForbiddenException('无权操作：该提交记录未分配给您复核，仅可处理"我的复核待办"中的指派记录');
       }
     }
 
@@ -172,15 +178,13 @@ export class SubmissionService {
     }
 
     if (user.role === UserRole.COLLECTOR) {
-      if (sample.assignedTo && sample.assignedTo !== user.id) {
-        throw new ForbiddenException('无权创建：该样本未分配给您');
-      }
       if (!sample.assignedTo) {
-        sample.assignedTo = user.id;
-        if (sample.status === SampleStatus.PENDING) {
-          sample.status = SampleStatus.IN_PROGRESS;
-          await this.sampleRepo.save(sample);
-        }
+        throw new ForbiddenException(
+          '无权创建：该样本尚未分配给任何人，请等待管理员/客户分配给您后再操作',
+        );
+      }
+      if (sample.assignedTo !== user.id) {
+        throw new ForbiddenException('无权创建：该样本未分配给您');
       }
     }
 

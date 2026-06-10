@@ -62,8 +62,17 @@ export class ReviewService {
       if (submission.sample.project.clientId !== user.clientId) {
         throw new ForbiddenException('无权访问：该资源属于其他调用方(clientId)');
       }
-      if (submission.assignedReviewer && submission.assignedReviewer !== user.id) {
-        throw new ForbiddenException('无权复核：该记录未分配给您，请在"我的复核"中查看分配给您的待办');
+      if (user.role === UserRole.REVIEWER) {
+        if (!submission.assignedReviewer) {
+          throw new ForbiddenException(
+            '无权复核：该记录尚未分配复核人员，请等待客户/管理员派单后在"我的复核待办"中处理',
+          );
+        }
+        if (submission.assignedReviewer !== user.id) {
+          throw new ForbiddenException(
+            '无权复核：该记录未分配给您，仅可处理"我的复核待办"中派给您的任务',
+          );
+        }
       }
     }
 
