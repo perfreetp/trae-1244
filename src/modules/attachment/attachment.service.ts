@@ -4,6 +4,7 @@ import { Repository, In } from 'typeorm';
 import * as fs from 'fs';
 import * as path from 'path';
 import { v4 as uuidv4 } from 'uuid';
+import { IsString, IsOptional, IsEnum } from 'class-validator';
 import { Attachment, AttachmentType } from '../../entities/attachment.entity';
 import { Submission } from '../../entities/submission.entity';
 import { Project } from '../../entities/project.entity';
@@ -11,9 +12,20 @@ import { UserRole } from '../../entities/user.entity';
 import { CurrentUserPayload } from '../auth/current-user.decorator';
 
 export class QueryAttachmentDto {
+  @IsString()
+  @IsOptional()
   projectId?: string;
+
+  @IsString()
+  @IsOptional()
   submissionId?: string;
+
+  @IsString()
+  @IsOptional()
   questionKey?: string;
+
+  @IsEnum(AttachmentType)
+  @IsOptional()
   type?: AttachmentType;
 }
 
@@ -91,6 +103,26 @@ export class AttachmentService {
           '无权上传：绑定的 submissionId/projectId 属于其他调用方(clientId)',
         );
       }
+      if (submissionId) {
+        const sub = await this.submissionRepo.findOne({ where: { id: submissionId } });
+        if (!sub) {
+          throw new BadRequestException('传入的 submissionId 不存在');
+        }
+        if (user.role === UserRole.COLLECTOR) {
+          if (sub.submittedBy !== user.id) {
+            throw new ForbiddenException(
+              '采集员只能将附件上传到自己的提交记录，不能绑定其他采集员的提交',
+            );
+          }
+        }
+        if (user.role === UserRole.REVIEWER) {
+          if (!sub.assignedReviewer || sub.assignedReviewer !== user.id) {
+            throw new ForbiddenException(
+              '复核员只能将附件上传到分配给自己复核的提交记录',
+            );
+          }
+        }
+      }
     }
 
     const finalType = type || this.detectTypeByMime(file.mimetype, file.originalname);
@@ -122,6 +154,10 @@ export class AttachmentService {
 
   private async checkAttachmentAccess(attachment: Attachment, user: CurrentUserPayload) {
     if (user.role === UserRole.ADMIN) return;
+
+    if (!attachment.submissionId && !attachment.projectId) {
+      throw new ForbiddenException('无权访问：该附件尚未归属任何项目或提交');
+    }
 
     let clientId: string | undefined;
     if (attachment.submissionId) {
@@ -159,27 +195,29 @@ export class AttachmentService {
   async findAll(query: QueryAttachmentDto, user: CurrentUserPayload) {
     const qb = this.attachmentRepo
       .createQueryBuilder('a')
-      .leftJoin('a.submission', 's')
+      .leftJoinAndSelect('a.submission', 's')
       .leftJoin('s.sample', 'sample')
-      .leftJoin('sample.project', 'project_sample')
-      .leftJoin(Project, 'project', 'project.id = a.projectId OR project.id = project_sample.id');
+      .leftJoin('sample.project', 'sp')
+      .leftJoin(Project, 'ap', 'ap.id = a.projectId');
 
     if (user.role !== UserRole.ADMIN) {
-      qb.andWhere('(project.clientId = :cid OR a.projectId IS NULL AND s.id IS NULL)', {
-        cid: user.clientId,
-      });
-      qb.andWhere('(project_sample.clientId IS NULL OR project_sample.clientId = :cid)', {
-        cid: user.clientId,
-      });
+      qb.andWhere('(a.projectId IS NOT NULL OR a.submissionId IS NOT NULL)');
     }
+
+    if (user.role === UserRole.CLIENT) {
+      qb.andWhere('(sp.clientId = :cid OR ap.clientId = :cid)', { cid: user.clientId });
+    }
+
     if (user.role === UserRole.COLLECTOR) {
-      qb.andWhere('(s.submittedBy = :uid OR s.id IS NULL)', { uid: user.id });
+      qb.andWhere('s.submittedBy = :uid', { uid: user.id });
     }
+
     if (user.role === UserRole.REVIEWER) {
-      qb.andWhere('(s.assignedReviewer = :uid)', { uid: user.id });
+      qb.andWhere('s.assignedReviewer = :uid', { uid: user.id });
     }
+
     if (query.projectId) {
-      qb.andWhere('(a.projectId = :pid OR project_sample.id = :pid)', { pid: query.projectId });
+      qb.andWhere('(a.projectId = :pid OR sp.id = :pid)', { pid: query.projectId });
     }
     if (query.submissionId) {
       qb.andWhere('a.submissionId = :sid', { sid: query.submissionId });
@@ -190,7 +228,8 @@ export class AttachmentService {
     if (query.type) {
       qb.andWhere('a.type = :t', { t: query.type });
     }
-    qb.orderBy('a.createdAt', 'DESC');
+
+    qb.orderBy('a.uploadedAt', 'DESC');
     return qb.getMany();
   }
 

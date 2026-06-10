@@ -57,56 +57,12 @@ export class SubmissionService {
     return `http://localhost:${port}/api/attachments/${attachmentId}/download`;
   }
 
-  private async checkAttachmentUserAccess(
-    att: Attachment,
+  private async preValidateAttachments(
+    attachmentIds: string[],
     user: CurrentUserPayload,
     targetProjectId: string,
-    targetSubmissionId: string,
+    existingSubmissionId?: string,
   ) {
-    if (att.projectId && att.projectId !== targetProjectId) {
-      throw new ForbiddenException(
-        `附件(${att.id}) 属于项目(${att.projectId})，不允许绑定到当前项目(${targetProjectId})`,
-      );
-    }
-    if (att.submissionId && att.submissionId !== targetSubmissionId) {
-      throw new BadRequestException(
-        `附件(${att.id}) 已绑定到提交记录(${att.submissionId})，不允许改绑到其他提交，请先解绑原记录或上传新附件`,
-      );
-    }
-    let clientId: string | undefined;
-    if (att.submissionId) {
-      const sub = await this.submissionRepo.findOne({
-        where: { id: att.submissionId },
-        relations: ['sample', 'sample.project'],
-      });
-      clientId = sub ? (sub.sample as any)?.project?.clientId : undefined;
-    } else if (att.projectId) {
-      const p = await this.projectRepo.findOne({ where: { id: att.projectId } });
-      clientId = p?.clientId;
-    }
-    if (clientId && user.role !== UserRole.ADMIN && clientId !== user.clientId) {
-      throw new ForbiddenException(`附件(${att.id}) 属于其他调用方(clientId)，无权绑定`);
-    }
-    if (user.role === UserRole.COLLECTOR && att.submissionId) {
-      const sub = await this.submissionRepo.findOne({ where: { id: att.submissionId } });
-      if (sub && sub.submittedBy && sub.submittedBy !== user.id) {
-        throw new ForbiddenException(`附件(${att.id}) 属于其他采集员的提交记录，无权绑定`);
-      }
-    }
-    if (user.role === UserRole.COLLECTOR && !att.submissionId && !att.projectId) {
-      throw new ForbiddenException(
-        `附件(${att.id}) 尚未绑定任何项目/提交，采集员只能绑定自己有权限的附件`,
-      );
-    }
-  }
-
-  private async validateAndBindAttachments(
-    attachmentIds: string[] | undefined,
-    targetSubmissionId: string,
-    user: CurrentUserPayload,
-    targetProjectId: string,
-  ) {
-    if (!attachmentIds || attachmentIds.length === 0) return 0;
     const ids = [...new Set(attachmentIds)];
     const attachments = await this.attachmentRepo.find({ where: { id: In(ids) } });
     if (attachments.length !== ids.length) {
@@ -115,15 +71,59 @@ export class SubmissionService {
       throw new NotFoundException(`附件 ID 不存在: ${missing.join(', ')}`);
     }
     for (const att of attachments) {
-      await this.checkAttachmentUserAccess(att, user, targetProjectId, targetSubmissionId);
+      if (att.projectId && att.projectId !== targetProjectId) {
+        throw new ForbiddenException(
+          `附件(${att.id}) 属于项目(${att.projectId})，不允许绑定到当前项目(${targetProjectId})`,
+        );
+      }
+      if (att.submissionId) {
+        if (!existingSubmissionId || att.submissionId !== existingSubmissionId) {
+          throw new BadRequestException(
+            `附件(${att.id}) 已绑定到提交记录(${att.submissionId})，不允许改绑到其他提交，请先解绑原记录或上传新附件`,
+          );
+        }
+      }
+      let clientId: string | undefined;
+      if (att.submissionId) {
+        const sub = await this.submissionRepo.findOne({
+          where: { id: att.submissionId },
+          relations: ['sample', 'sample.project'],
+        });
+        clientId = sub ? (sub.sample as any)?.project?.clientId : undefined;
+      } else if (att.projectId) {
+        const p = await this.projectRepo.findOne({ where: { id: att.projectId } });
+        clientId = p?.clientId;
+      }
+      if (clientId && user.role !== UserRole.ADMIN && clientId !== user.clientId) {
+        throw new ForbiddenException(`附件(${att.id}) 属于其他调用方(clientId)，无权绑定`);
+      }
+      if (user.role === UserRole.COLLECTOR && att.submissionId) {
+        const sub = await this.submissionRepo.findOne({ where: { id: att.submissionId } });
+        if (sub && sub.submittedBy && sub.submittedBy !== user.id) {
+          throw new ForbiddenException(`附件(${att.id}) 属于其他采集员的提交记录，无权绑定`);
+        }
+      }
+      if (user.role === UserRole.COLLECTOR && !att.submissionId && !att.projectId) {
+        throw new ForbiddenException(
+          `附件(${att.id}) 尚未绑定任何项目/提交，采集员只能绑定自己有权限的附件`,
+        );
+      }
     }
+  }
+
+  private async bindAttachments(
+    attachmentIds: string[],
+    targetSubmissionId: string,
+    targetProjectId: string,
+  ) {
+    const ids = [...new Set(attachmentIds)];
     await this.attachmentRepo
       .createQueryBuilder()
       .update()
       .set({ submissionId: targetSubmissionId, projectId: targetProjectId })
       .whereInIds(ids)
       .execute();
-    return attachments.length;
+    return ids.length;
   }
 
   private async addHistory(
@@ -272,6 +272,10 @@ export class SubmissionService {
       throw new BadRequestException('该样本已存在对应提交记录，请使用 PATCH 更新或 POST /submit 提交');
     }
 
+    if (dto.attachmentIds && dto.attachmentIds.length > 0) {
+      await this.preValidateAttachments(dto.attachmentIds, user, projectId);
+    }
+
     const validation = await this.validateSubmission(dto.formId, dto.answers, dto.sampleId);
 
     const submission = this.submissionRepo.create({
@@ -296,7 +300,9 @@ export class SubmissionService {
 
     const saved = await this.submissionRepo.save(submission);
 
-    await this.validateAndBindAttachments(dto.attachmentIds, saved.id, user, projectId);
+    if (dto.attachmentIds && dto.attachmentIds.length > 0) {
+      await this.bindAttachments(dto.attachmentIds, saved.id, projectId);
+    }
 
     await this.addHistory(saved.id, user.id, HistoryAction.CREATED);
     return saved;
@@ -417,10 +423,14 @@ export class SubmissionService {
     });
     if (!submission) throw new NotFoundException('提交不存在');
 
-    await this.checkAccess(submission, user);
+    const access = await this.checkAccess(submission, user);
 
     if (submission.isLocked) {
       throw new BadRequestException('该记录已锁定，无法修改');
+    }
+
+    if (dto.attachmentIds && dto.attachmentIds.length > 0) {
+      await this.preValidateAttachments(dto.attachmentIds, user, access.projectId, submission.id);
     }
 
     const changes: Record<string, { old: any; new: any }> = {};
@@ -450,16 +460,6 @@ export class SubmissionService {
       changes.answers = { old: 'updated', new: 'updated' };
     }
 
-    if (dto.attachmentIds && dto.attachmentIds.length > 0) {
-      const access = await this.checkAccess(submission, user);
-      await this.validateAndBindAttachments(
-        dto.attachmentIds,
-        submission.id,
-        user,
-        access.projectId,
-      );
-    }
-
     const validation = await this.validateSubmission(
       submission.formId,
       submission.answers,
@@ -471,6 +471,11 @@ export class SubmissionService {
     submission.hasMissing = validation.hasMissing;
 
     const saved = await this.submissionRepo.save(submission);
+
+    if (dto.attachmentIds && dto.attachmentIds.length > 0) {
+      await this.bindAttachments(dto.attachmentIds, submission.id, access.projectId);
+    }
+
     await this.addHistory(saved.id, user.id, HistoryAction.UPDATED, changes);
     return saved;
   }

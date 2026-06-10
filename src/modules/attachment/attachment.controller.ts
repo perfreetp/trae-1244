@@ -15,16 +15,30 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { AuthGuard } from '@nestjs/passport';
 import { ApiTags, ApiBearerAuth, ApiConsumes, ApiBody, ApiOperation, ApiQuery } from '@nestjs/swagger';
+import { IsString, IsOptional, IsEnum } from 'class-validator';
 import { Response } from 'express';
 import { AttachmentService, QueryAttachmentDto } from './attachment.service';
 import { AttachmentType } from '../../entities/attachment.entity';
 import { CurrentUser, CurrentUserPayload } from '../auth/current-user.decorator';
 
 class UploadAttachmentBodyDto {
+  @IsEnum(AttachmentType)
+  @IsOptional()
   type?: AttachmentType;
+
+  @IsString()
+  @IsOptional()
   questionKey?: string;
+
+  @IsString()
+  @IsOptional()
   submissionId?: string;
+
+  @IsString()
+  @IsOptional()
   projectId?: string;
+
+  @IsOptional()
   metadata?: string | Record<string, any>;
 }
 
