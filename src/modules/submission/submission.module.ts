@@ -7,6 +7,7 @@ import { Form } from '../../entities/form.entity';
 import { FormQuestion } from '../../entities/form-question.entity';
 import { Sample } from '../../entities/sample.entity';
 import { Attachment } from '../../entities/attachment.entity';
+import { Project } from '../../entities/project.entity';
 import { SubmissionService } from './submission.service';
 import { SubmissionController } from './submission.controller';
 
@@ -20,6 +21,7 @@ import { SubmissionController } from './submission.controller';
       FormQuestion,
       Sample,
       Attachment,
+      Project,
     ]),
   ],
   controllers: [SubmissionController],

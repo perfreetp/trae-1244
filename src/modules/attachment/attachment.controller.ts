@@ -10,12 +10,13 @@ import {
   Body,
   Res,
   BadRequestException,
+  Query,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { AuthGuard } from '@nestjs/passport';
-import { ApiTags, ApiBearerAuth, ApiConsumes, ApiBody, ApiOperation } from '@nestjs/swagger';
+import { ApiTags, ApiBearerAuth, ApiConsumes, ApiBody, ApiOperation, ApiQuery } from '@nestjs/swagger';
 import { Response } from 'express';
-import { AttachmentService } from './attachment.service';
+import { AttachmentService, QueryAttachmentDto } from './attachment.service';
 import { AttachmentType } from '../../entities/attachment.entity';
 import { CurrentUser, CurrentUserPayload } from '../auth/current-user.decorator';
 
@@ -97,6 +98,26 @@ export class AttachmentController {
       body.projectId,
       user,
     );
+  }
+
+  @Get()
+  @ApiOperation({
+    summary: '附件列表查询：按项目/提交/题目key/类型筛选，角色自动过滤可见范围',
+  })
+  @ApiQuery({ name: 'projectId', required: false, description: '按项目 ID 筛选' })
+  @ApiQuery({ name: 'submissionId', required: false, description: '按提交记录 ID 筛选' })
+  @ApiQuery({ name: 'questionKey', required: false, description: '按题目 key 筛选' })
+  @ApiQuery({
+    name: 'type',
+    required: false,
+    enum: ['photo', 'audio', 'video', 'file'],
+    description: '按附件类型筛选',
+  })
+  async findAll(
+    @Query() query: QueryAttachmentDto,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    return this.attachmentService.findAll(query, user);
   }
 
   @Get(':id')
